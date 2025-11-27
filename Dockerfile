@@ -1,0 +1,19 @@
+FROM python:3.9.25-alpine3.22
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+RUN apk add --no-cache curl=8.14.1-r2 jq=1.8.1-r0
+
+COPY requirements.txt requirements.txt
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN addgroup -g 10001 tokentx && adduser -u 10001 -G tokentx -S tokentx
+USER tokentx
+
+COPY src/ /app/src/
+
+ENTRYPOINT ["python", "src/main.py"]
