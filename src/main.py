@@ -1,5 +1,6 @@
 import argparse, os, asyncio, signal, json, logging, threading
 from datetime import datetime, timezone
+from web3.providers.rpc.async_rpc import AsyncHTTPProvider
 from web3 import AsyncWeb3, Web3, AsyncHTTPProvider
 from web3.middleware import SignAndSendRawMiddlewareBuilder, ExtraDataToPOAMiddleware
 from typing import Optional
@@ -56,7 +57,7 @@ def init_logger():
 
 logger = init_logger()
 
-async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, interval: int):
+async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, interval: int, use_legacy_gas: bool = False):
     """
     Send funds to an account on a regular interval.
 
@@ -66,6 +67,7 @@ async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, inter
         pk: Private key of the account that will send the funds
         to_address: Address of the account that will receive the funds
         interval: Interval in seconds to send the funds
+        use_legacy_gas: If True, use legacy gas pricing - useful for local networks (fixed)
     """
     # Derive account address from private key
     account = w3.eth.account.from_key(pk)
@@ -73,6 +75,12 @@ async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, inter
     # SignAndSendRawMiddlewareBuilder handles signing automatically
     # https://web3py.readthedocs.io/en/stable/middleware.html#web3.middleware.SignAndSendRawMiddlewareBuilder
     w3.middleware_onion.inject(SignAndSendRawMiddlewareBuilder.build(account), layer=0)
+
+    # Use legacy gas if flag is set
+    if use_legacy_gas:
+        logger.info("Using legacy gas pricing (--legacy-gas flag set)")
+    else:
+        logger.info("Using EIP-1559 dynamic fee transactions")
 
     logger.info("Starting transaction service")
     logger.info(f"from: {account.address}, to: {to_address}, amount: {amount} wei, interval: {interval} seconds")
@@ -86,13 +94,21 @@ async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, inter
             # Get current gas prices dynamically
             gas_price = await w3.eth.gas_price
 
-            tx_dict = {
-                'from': account.address,
-                'to': to_address,
-                'value': amount,
-                'maxFeePerGas': int(gas_price * 1.2),  # 20% buffer over base fee
-                'maxPriorityFeePerGas': 1000000000  # 1 gwei tip
-            }
+            if not use_legacy_gas:
+                tx_dict = {
+                    'from': account.address,
+                    'to': to_address,
+                    'value': amount,
+                    'maxFeePerGas': int(gas_price * 1.2),  # 20% buffer over base fee
+                    'maxPriorityFeePerGas': 1000000000  # 1 gwei tip
+                }
+            else:
+                tx_dict = {
+                    'from': account.address,
+                    'to': to_address,
+                    'value': amount,
+                    'gasPrice': gas_price
+                }
 
             tx_hash = await w3.eth.send_transaction(tx_dict)
 
@@ -142,7 +158,7 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
     attempt = 0
     while attempt < max_attempts:
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url))
+            w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
             if await w3.is_connected():
                 w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
                 return w3
@@ -159,11 +175,11 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
     logger.error("Unable to connect to RPC node after maximum retry attempts")
     return None
 
-async def liveness_handler(request):
+async def liveness_handler(_request):
     """Liveness probe - is the service running."""
     return web.json_response({'status': 'alive'}, status=200)
 
-async def readiness_handler(request):
+async def readiness_handler(_request):
     """Readiness probe - is the service ready to send txs."""
     # Service is ready if: connected, initialized, and not too many errors
     is_ready = (
@@ -189,7 +205,7 @@ async def readiness_handler(request):
             'reason': 'too_many_errors' if service_state['error_count'] >= 5 else 'not_initialized'
         }, status=503)
 
-async def health_handler(request):
+async def health_handler(_request):
     """Combined health check endpoint."""
     return web.json_response({
         'status': 'healthy' if service_state['ready'] else 'unhealthy',
@@ -239,7 +255,7 @@ async def main():
         description="Token Transaction Service - Sends ETH transactions to a specified address at regular intervals.",
         epilog="""
 Examples:
-  # Basic usage with private key
+  # Basic usage with private key (EIP-1559 dynamic fees)
   python src/main.py --rpc-url https://linea-mainnet.infura.io/v3/YOUR_KEY \\
     --pk 0x1234... --to-address 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb --amount 10
 
@@ -247,6 +263,11 @@ Examples:
   export SENDER_PK=0x1234...
   python src/main.py --rpc-url https://linea-mainnet.infura.io/v3/YOUR_KEY \\
     --to-address 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb --amount 10 --interval 5
+
+  # Using legacy gas pricing (for local networks or networks without EIP-1559 support)
+  python src/main.py --rpc-url http://localhost:8545 \\
+    --pk 0x1234... --to-address 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb \\
+    --amount 10 --legacy-gas
 
   # Custom health check port
   python src/main.py --rpc-url https://linea-mainnet.infura.io/v3/YOUR_KEY \\
@@ -310,6 +331,12 @@ For more information, see README.md
         help="Port for health check HTTP server (default: 8080). "
              "Provides liveness and readiness probes for Kubernetes/Docker."
     )
+    parser.add_argument(
+        '--legacy-gas',
+        action='store_true',
+        required=False,
+        help="Use legacy gas pricing instead of EIP-1559 dynamic fees. "
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -349,7 +376,7 @@ For more information, see README.md
             return
 
         # Run transaction service (this will run until shutdown_event is set)
-        await send_funds(w3, args.amount, pk, to_address, args.interval)
+        await send_funds(w3, args.amount, pk, to_address, args.interval, use_legacy_gas=args.legacy_gas)
     except asyncio.CancelledError:
         logger.info("Service cancelled")
     except Exception as e:

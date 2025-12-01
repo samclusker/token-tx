@@ -10,6 +10,8 @@ A Python service that signs an EOA tx and sends an amount (in wei) to a specifie
 - Automatic retry logic for RPC connection failures
 - Proper transaction signing using EOA private keys
 - Support with PoA middleware
+- Health check endpoints (liveness, readiness, health)
+- Support for legacy gas pricing (for networks without EIP-1559 support)
 
 ## Installation
 
@@ -55,6 +57,19 @@ python src/main.py \
   --amount <AMOUNT_IN_WEI>
 ```
 
+### Using Legacy Gas Pricing
+
+For local networks or networks that don't support EIP-1559 dynamic fees:
+
+```bash
+python src/main.py \
+  --rpc-url <RPC_URL> \
+  --pk <PRIVATE_KEY> \
+  --to-address <RECIPIENT_ADDRESS> \
+  --amount <AMOUNT_IN_WEI> \
+  --legacy-gas
+```
+
 ### Arguments
 
 - `--rpc-url` (required): RPC URL for the blockchain node
@@ -62,6 +77,18 @@ python src/main.py \
 - `--to-address` (required): Recipient Ethereum address
 - `--amount` (required): Amount to send in wei (must be a positive integer)
 - `--interval` (optional): Interval in seconds between transactions (default: 1)
+- `--legacy-gas` (optional): Use legacy gas pricing instead of EIP-1559 dynamic fees (useful for local networks)
+- `--health-port` (optional): Port for health check HTTP server (default: 8080)
+
+### Health Check Endpoints
+
+When running, the service exposes health check endpoints:
+
+- **Liveness**: `http://localhost:8080/health/live` - Is the service running?
+- **Readiness**: `http://localhost:8080/health/ready` - Is the service ready to send transactions?
+- **Health**: `http://localhost:8080/health` - Combined health status
+
+These endpoints are useful for Kubernetes/Docker health checks and monitoring.
 
 ## Security Notes
 
