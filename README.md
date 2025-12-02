@@ -35,7 +35,7 @@ python src/main.py \
 ### Docker Usage
 
 ```bash
-docker run token-tx:1.0.0 \
+docker run 0xbinbash/token-tx:1.0.1 \
   --rpc-url <RPC_URL> \
   --pk <PRIVATE_KEY> \
   --to-address <RECIPIENT_ADDRESS> \
@@ -71,6 +71,10 @@ python src/main.py \
 ```
 
 ### Arguments
+
+```bash
+python src/main.py --help
+```
 
 - `--rpc-url` (required): RPC URL for the blockchain node
 - `--pk` (optional): Private key of the sender account (can also use `SENDER_PK` env var)
