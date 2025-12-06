@@ -65,7 +65,7 @@ def init_logger():
 
 logger = init_logger()
 
-async def send_funds(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+async def send_funds(  # pylint: disable=too-many-arguments,too-many-positional
     w3: AsyncWeb3,
     amount: int,
     pk: str,
