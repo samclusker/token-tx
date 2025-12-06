@@ -16,4 +16,9 @@ USER tokentx
 
 COPY src/ /app/src/
 
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/health/ready || exit 1
+
 ENTRYPOINT ["python", "src/main.py"]

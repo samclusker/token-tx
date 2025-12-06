@@ -73,7 +73,6 @@ jobs:
         uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf # v12.1347.0
         with:
           quiet: true
-          soft_fail: true
           docker_image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           dockerfile_path: ./Dockerfile
           container_user: 10001
