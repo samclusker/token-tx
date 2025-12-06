@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-RUN apk add --no-cache curl=8.14.1-r2 jq=1.8.1-r0
+RUN apk add --no-cache jq=1.8.1-r0
 
 COPY requirements.txt requirements.txt
 

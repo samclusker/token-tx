@@ -1,0 +1,38 @@
+name: 'Checkov'
+
+on:
+  push:
+  pull_request:
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: 'Checkov'
+    environment: production
+
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+    - name: Checkov Dockerfile
+      uses: bridgecrewio/checkov-action@99bb2caf247dfd9f03cf984373bc6043d4e32ebf # v12.1347.0
+      with:
+        file: Dockerfile
+        quiet: true
+        output_format: cli,sarif
+        output_file_path: console,results.sarif
