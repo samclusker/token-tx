@@ -35,7 +35,7 @@ python src/main.py \
 ### Docker Usage
 
 ```bash
-docker run 0xbinbash/token-tx:1.0.1 \
+docker run ghcr.io/samclusker/token-tx:1.1.0 \
   --rpc-url <RPC_URL> \
   --pk <PRIVATE_KEY> \
   --to-address <RECIPIENT_ADDRESS> \
