@@ -65,25 +65,21 @@ def init_logger():
 
 logger = init_logger()
 
-async def send_funds(  # pylint: disable=too-many-arguments,too-many-positional
-    w3: AsyncWeb3,
-    amount: int,
-    pk: str,
-    to_address: str,
-    interval: int,
-    use_legacy_gas: bool = False
-):
+async def send_funds(w3: AsyncWeb3, tx_data: dict):
     """
     Send funds to an account on a regular interval.
 
     Args:
         w3: AsyncWeb3 object
-        amount: Amount in wei to send to the account
-        pk: Private key of the account that will send the funds
-        to_address: Address of the account that will receive the funds
-        interval: Interval in seconds to send the funds
-        use_legacy_gas: If True, use legacy gas pricing - useful for local networks (fixed)
+        tx_data: Dictionary containing the transaction data
     """
+
+    amount = tx_data['value']
+    pk = tx_data['pk']
+    to_address = tx_data['to']
+    interval = tx_data['interval']
+    use_legacy_gas = tx_data['use_legacy_gas']
+
     # Derive account address from private key
     account = w3.eth.account.from_key(pk)
     w3.eth.default_account = account.address
@@ -91,6 +87,7 @@ async def send_funds(  # pylint: disable=too-many-arguments,too-many-positional
     # https://web3py.readthedocs.io/en/stable/middleware.html#web3.middleware.SignAndSendRawMiddlewareBuilder
     middleware = SignAndSendRawMiddlewareBuilder.build(account)  # pylint: disable=no-value-for-parameter
     w3.middleware_onion.inject(middleware, layer=0)
+
 
     # Use legacy gas if flag is set
     if use_legacy_gas:
@@ -434,11 +431,13 @@ For more information, see README.md
         # Run transaction service (this will run until shutdown_event is set)
         await send_funds(
             w3,
-            args.amount,
-            pk,
-            to_address,
-            args.interval,
-            use_legacy_gas=args.legacy_gas
+            {
+                'value': args.amount,
+                'pk': pk,
+                'to': to_address,
+                'interval': args.interval,
+                'use_legacy_gas': args.legacy_gas
+            }
         )
     except asyncio.CancelledError:
         logger.info("Service cancelled")
