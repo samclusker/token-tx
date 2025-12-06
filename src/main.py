@@ -1,10 +1,18 @@
-import argparse, os, asyncio, signal, json, logging, threading
+"""Token Transaction Service - Sends EOA transactions at regular intervals."""
+import argparse
+import asyncio
+import json
+import logging
+import os
+import signal
+import threading
 from datetime import datetime, timezone
-from web3.providers.rpc.async_rpc import AsyncHTTPProvider
-from web3 import AsyncWeb3, Web3, AsyncHTTPProvider
-from web3.middleware import SignAndSendRawMiddlewareBuilder, ExtraDataToPOAMiddleware
 from typing import Optional
+
 from aiohttp import web
+from web3 import AsyncWeb3, Web3
+from web3.middleware import ExtraDataToPOAMiddleware, SignAndSendRawMiddlewareBuilder
+from web3.providers.rpc.async_rpc import AsyncHTTPProvider
 
 # Shutdown flag for graceful termination (thread-safe for signal handlers)
 shutdown_event = threading.Event()
@@ -45,36 +53,41 @@ class JSONFormatter(logging.Formatter):
 
 def init_logger():
     """Initialize logger with JSON formatter"""
-    logger = logging.getLogger(SERVICE_NAME)
-    logger.setLevel(logging.INFO)
+    app_logger = logging.getLogger(SERVICE_NAME)
+    app_logger.setLevel(logging.INFO)
 
     # Create console handler with JSON formatter
     handler = logging.StreamHandler()
     handler.setFormatter(JSONFormatter())
-    logger.addHandler(handler)
+    app_logger.addHandler(handler)
 
-    return logger
+    return app_logger
 
 logger = init_logger()
 
-async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, interval: int, use_legacy_gas: bool = False):
+async def send_funds(w3: AsyncWeb3, tx_data: dict):
     """
     Send funds to an account on a regular interval.
 
     Args:
         w3: AsyncWeb3 object
-        amount: Amount in wei to send to the account
-        pk: Private key of the account that will send the funds
-        to_address: Address of the account that will receive the funds
-        interval: Interval in seconds to send the funds
-        use_legacy_gas: If True, use legacy gas pricing - useful for local networks (fixed)
+        tx_data: Dictionary containing the transaction data
     """
+
+    amount = tx_data['value']
+    pk = tx_data['pk']
+    to_address = tx_data['to']
+    interval = tx_data['interval']
+    use_legacy_gas = tx_data['use_legacy_gas']
+
     # Derive account address from private key
     account = w3.eth.account.from_key(pk)
     w3.eth.default_account = account.address
     # SignAndSendRawMiddlewareBuilder handles signing automatically
     # https://web3py.readthedocs.io/en/stable/middleware.html#web3.middleware.SignAndSendRawMiddlewareBuilder
-    w3.middleware_onion.inject(SignAndSendRawMiddlewareBuilder.build(account), layer=0)
+    middleware = SignAndSendRawMiddlewareBuilder.build(account)  # pylint: disable=no-value-for-parameter
+    w3.middleware_onion.inject(middleware, layer=0)
+
 
     # Use legacy gas if flag is set
     if use_legacy_gas:
@@ -83,7 +96,13 @@ async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, inter
         logger.info("Using EIP-1559 dynamic fee transactions")
 
     logger.info("Starting transaction service")
-    logger.info(f"from: {account.address}, to: {to_address}, amount: {amount} wei, interval: {interval} seconds")
+    logger.info(
+        "from: %s, to: %s, amount: %s wei, interval: %s seconds",
+        account.address,
+        to_address,
+        amount,
+        interval
+    )
 
     # Considered in ready state
     service_state['ready'] = True
@@ -112,7 +131,12 @@ async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, inter
 
             tx_hash = await w3.eth.send_transaction(tx_dict)
 
-            logger.info(f"Sent {amount} wei to {to_address}, TX: {tx_hash.hex()}")
+            logger.info(
+                "Sent %s wei to %s, TX: %s",
+                amount,
+                to_address,
+                tx_hash.hex()
+            )
 
             # Update state
             service_state['last_tx_time'] = datetime.now().isoformat()
@@ -124,20 +148,23 @@ async def send_funds(w3: AsyncWeb3, amount: int, pk: str, to_address: str, inter
         except asyncio.CancelledError:
             logger.info("Transaction service cancelled, shutting down")
             break
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             service_state['error_count'] += 1
-            logger.error(f"Error sending transaction: {e}")
+            logger.error("Error sending transaction: %s", e)
 
             # Considered not ready if too many consecutive errors (threshold: 5)
             if service_state['error_count'] >= 5:
                 service_state['ready'] = False
-                logger.warning(f"Service marked as not ready due to {service_state['error_count']} consecutive errors")
+                logger.warning(
+                    "Service marked as not ready due to %s consecutive errors",
+                    service_state['error_count']
+                )
 
             if shutdown_event.is_set():
                 logger.info("Shutdown signal received during error handling, stopping")
                 break
 
-            logger.info(f"Retrying in {interval} seconds")
+            logger.info("Retrying in %s seconds", interval)
             await asyncio.sleep(interval)
 
     logger.info("Transaction service stopped")
@@ -164,12 +191,23 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
                 return w3
             attempt += 1
             wait_time = 2 ** attempt
-            logger.warning(f"Failed to connect to RPC node (attempt {attempt}/{max_attempts}), retrying in {wait_time} seconds")
+            logger.warning(
+                "Failed to connect to RPC node (attempt %s/%s), retrying in %s seconds",
+                attempt,
+                max_attempts,
+                wait_time
+            )
             await asyncio.sleep(wait_time)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             attempt += 1
             wait_time = 2 ** attempt
-            logger.error(f"Error connecting to RPC node: {e} (attempt {attempt}/{max_attempts}), retrying in {wait_time} seconds")
+            logger.error(
+                "Error connecting to RPC node: %s (attempt %s/%s), retrying in %s seconds",
+                e,
+                attempt,
+                max_attempts,
+                wait_time
+            )
             await asyncio.sleep(wait_time)
 
     logger.error("Unable to connect to RPC node after maximum retry attempts")
@@ -196,14 +234,13 @@ async def readiness_handler(_request):
             'last_tx_hash': service_state['last_tx_hash'],
             'error_count': service_state['error_count']
         }, status=200)
-    else:
-        return web.json_response({
-            'status': 'not_ready',
-            'ready': service_state['ready'],
-            'connected': service_state['connected'],
-            'error_count': service_state['error_count'],
-            'reason': 'too_many_errors' if service_state['error_count'] >= 5 else 'not_initialized'
-        }, status=503)
+    return web.json_response({
+        'status': 'not_ready',
+        'ready': service_state['ready'],
+        'connected': service_state['connected'],
+        'error_count': service_state['error_count'],
+        'reason': 'too_many_errors' if service_state['error_count'] >= 5 else 'not_initialized'
+    }, status=503)
 
 async def health_handler(_request):
     """Combined health check endpoint."""
@@ -223,7 +260,7 @@ def setup_signal_handlers():
             signum: Signal number
             _frame: Current stack frame
         """
-        logger.info(f"Received signal {signum}, initiating graceful shutdown")
+        logger.info("Received signal %s, initiating graceful shutdown", signum)
         shutdown_event.set()
 
     # https://docs.python.org/3/library/signal.html#signal.signal
@@ -245,14 +282,24 @@ async def start_health_server(port: int = 8080):
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    logger.info(f"Health check server started on http://0.0.0.0:{port}")
-    logger.info(f"Health endpoints - Liveness: http://localhost:{port}/health/live, Readiness: http://localhost:{port}/health/ready, Health: http://localhost:{port}/health")
+    logger.info("Health check server started on http://0.0.0.0:%s", port)
+    logger.info(
+        "Health endpoints - Liveness: http://localhost:%s/health/live, "
+        "Readiness: http://localhost:%s/health/ready, "
+        "Health: http://localhost:%s/health",
+        port,
+        port,
+        port
+    )
     return runner
 
 async def main():
     """Parses arguments and runs the tx service."""
     parser = argparse.ArgumentParser(
-        description="Token Transaction Service - Sends ETH transactions to a specified address at regular intervals.",
+        description=(
+            "Token Transaction Service - Sends ETH transactions to a "
+            "specified address at regular intervals."
+        ),
         epilog="""
 Examples:
   # Basic usage with private key (EIP-1559 dynamic fees)
@@ -288,7 +335,10 @@ For more information, see README.md
         type=str,
         required=True,
         metavar='URL',
-        help="RPC URL for the blockchain node (e.g., https://linea-mainnet.infura.io/v3/YOUR_KEY)"
+        help=(
+            "RPC URL for the blockchain node "
+            "(e.g., https://linea-mainnet.infura.io/v3/YOUR_KEY)"
+        )
     )
     parser.add_argument(
         '--amount',
@@ -347,7 +397,10 @@ For more information, see README.md
 
     pk = args.pk or os.environ.get('SENDER_PK')
     if not pk:
-        parser.error("--pk must be provided or SENDER_PK must be set in your environment variables.")
+        parser.error(
+            "--pk must be provided or SENDER_PK must be set in your "
+            "environment variables."
+        )
 
     if not args.to_address:
         parser.error("--to-address must be provided.")
@@ -376,11 +429,20 @@ For more information, see README.md
             return
 
         # Run transaction service (this will run until shutdown_event is set)
-        await send_funds(w3, args.amount, pk, to_address, args.interval, use_legacy_gas=args.legacy_gas)
+        await send_funds(
+            w3,
+            {
+                'value': args.amount,
+                'pk': pk,
+                'to': to_address,
+                'interval': args.interval,
+                'use_legacy_gas': args.legacy_gas
+            }
+        )
     except asyncio.CancelledError:
         logger.info("Service cancelled")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Unexpected error: %s", e)
     finally:
         # Cleanup
         logger.info("Cleaning up")
