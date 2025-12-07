@@ -8,16 +8,8 @@ import signal
 import threading
 from datetime import datetime, timezone
 from typing import Optional
-from web3.providers.rpc.async_rpc import AsyncHTTPProvider
-from web3.providers.persistent.websocket import WebSocketProvider
-from web3.providers.rpc.async_rpc import AsyncHTTPProvider
-from web3.providers.persistent.websocket import WebSocketProvider
-from web3.providers.rpc.async_rpc import AsyncHTTPProvider
-from web3.providers.persistent.websocket import WebSocketProvider
-from web3.providers.rpc.async_rpc import AsyncHTTPProvider
 
 from aiohttp import web
-from eth_utils.address import is_canonical_address
 from web3 import AsyncWeb3, Web3
 from web3.middleware import ExtraDataToPOAMiddleware, SignAndSendRawMiddlewareBuilder
 from web3.providers.rpc.async_rpc import AsyncHTTPProvider
@@ -192,7 +184,6 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
         AsyncWeb3 instance if successful, None otherwise
     """
     attempt = 0
-    last_error = None
     is_websocket = rpc_url.startswith(('ws://', 'wss://'))
 
     while attempt < max_attempts:
@@ -205,39 +196,36 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
                 w3 = AsyncWeb3[WebSocketProvider](WebSocketProvider(rpc_url))
                 try:
                     await w3.provider.connect()
-                    if not await w3.is_connected():
-                        raise ConnectionError("WebSocket connection not established")
-                except Exception as conn_error:
-                    last_error = conn_error
+                except Exception as conn_error:  # pylint: disable=broad-exception-caught
                     if is_final_attempt:
                         logger.error("WebSocket connection failed on final attempt: %s", conn_error)
                         break
-                    else:
-                        wait_time = 2 ** attempt
-                        logger.warning(
-                            "Failed to connect (attempt %s/%s), retrying in %s seconds",
-                            attempt,
-                            max_attempts,
-                            wait_time
-                        )
-                        await asyncio.sleep(wait_time)
-                        continue
+                    wait_time = 2 ** attempt
+                    logger.warning(
+                        "Failed to connect (attempt %s/%s), retrying in %s seconds",
+                        attempt,
+                        max_attempts,
+                        wait_time
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
             else:
                 w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
-                if not await w3.is_connected():
-                    if is_final_attempt:
-                        logger.error("HTTP connection failed on final attempt")
-                        break
-                    else:
-                        wait_time = 2 ** attempt
-                        logger.warning(
-                            "Failed to connect (attempt %s/%s), retrying in %s seconds",
-                            attempt,
-                            max_attempts,
-                            wait_time
-                        )
-                        await asyncio.sleep(wait_time)
-                        continue
+
+            # Verify connection
+            if not await w3.is_connected():
+                if is_final_attempt:
+                    logger.error("Connection verification failed on final attempt")
+                    break
+                wait_time = 2 ** attempt
+                logger.warning(
+                    "Failed to connect (attempt %s/%s), retrying in %s seconds",
+                    attempt,
+                    max_attempts,
+                    wait_time
+                )
+                await asyncio.sleep(wait_time)
+                continue
 
             # Successfully connected
             w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
@@ -245,29 +233,20 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
             return w3
 
         except Exception as e:  # pylint: disable=broad-exception-caught
-            last_error = e
             if is_final_attempt:
                 logger.error("Error connecting on final attempt: %s", e)
                 break
-            else:
-                wait_time = 2 ** attempt
-                logger.error(
-                    "Error connecting (attempt %s/%s), retrying in %s seconds: %s",
-                    attempt,
-                    max_attempts,
-                    wait_time,
-                    e
-                )
-                await asyncio.sleep(wait_time)
 
-    # Final error message, if we didn't connect
-    if last_error:
-        logger.error(
-            "Unable to connect to RPC node at %s after %s attempts: %s",
-            rpc_url,
-            max_attempts,
-            last_error
-        )
+            wait_time = 2 ** attempt
+            logger.error(
+                "Error connecting (attempt %s/%s), retrying in %s seconds: %s",
+                attempt,
+                max_attempts,
+                wait_time,
+                e
+            )
+            await asyncio.sleep(wait_time)
+
     return None
 
 async def liveness_handler(_request):
