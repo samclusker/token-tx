@@ -13,6 +13,7 @@ from aiohttp import web
 from web3 import AsyncWeb3, Web3
 from web3.middleware import ExtraDataToPOAMiddleware, SignAndSendRawMiddlewareBuilder
 from web3.providers.rpc.async_rpc import AsyncHTTPProvider
+from web3.providers.persistent import WebSocketProvider
 
 # Shutdown flag for graceful termination (thread-safe for signal handlers)
 shutdown_event = threading.Event()
@@ -183,34 +184,69 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
         AsyncWeb3 instance if successful, None otherwise
     """
     attempt = 0
+    is_websocket = rpc_url.startswith(('ws://', 'wss://'))
+
     while attempt < max_attempts:
+        attempt += 1
+        is_final_attempt = attempt >= max_attempts
+
         try:
-            w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
-            if await w3.is_connected():
-                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-                return w3
-            attempt += 1
-            wait_time = 2 ** attempt
-            logger.warning(
-                "Failed to connect to RPC node (attempt %s/%s), retrying in %s seconds",
-                attempt,
-                max_attempts,
-                wait_time
-            )
-            await asyncio.sleep(wait_time)
+            if is_websocket:
+                # https://web3py.readthedocs.io/en/stable/providers.html#web3.providers.persistent.WebSocketProvider
+                w3 = AsyncWeb3[WebSocketProvider](WebSocketProvider(rpc_url))
+                try:
+                    await w3.provider.connect()
+                except Exception as conn_error:  # pylint: disable=broad-exception-caught
+                    if is_final_attempt:
+                        logger.error("WebSocket connection failed on final attempt: %s", conn_error)
+                        break
+                    wait_time = 2 ** attempt
+                    logger.warning(
+                        "Failed to connect (attempt %s/%s), retrying in %s seconds",
+                        attempt,
+                        max_attempts,
+                        wait_time
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+            else:
+                w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
+
+            # Verify connection
+            if not await w3.is_connected():
+                if is_final_attempt:
+                    logger.error("Connection verification failed on final attempt")
+                    break
+                wait_time = 2 ** attempt
+                logger.warning(
+                    "Failed to connect (attempt %s/%s), retrying in %s seconds",
+                    attempt,
+                    max_attempts,
+                    wait_time
+                )
+                await asyncio.sleep(wait_time)
+                continue
+
+            # Successfully connected
+            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            logger.info("Successfully connected to RPC node at %s", rpc_url)
+            return w3
+
         except Exception as e:  # pylint: disable=broad-exception-caught
-            attempt += 1
+            if is_final_attempt:
+                logger.error("Error connecting on final attempt: %s", e)
+                break
+
             wait_time = 2 ** attempt
             logger.error(
-                "Error connecting to RPC node: %s (attempt %s/%s), retrying in %s seconds",
-                e,
+                "Error connecting (attempt %s/%s), retrying in %s seconds: %s",
                 attempt,
                 max_attempts,
-                wait_time
+                wait_time,
+                e
             )
             await asyncio.sleep(wait_time)
 
-    logger.error("Unable to connect to RPC node after maximum retry attempts")
     return None
 
 async def liveness_handler(_request):
@@ -446,6 +482,9 @@ For more information, see README.md
     finally:
         # Cleanup
         logger.info("Cleaning up")
+        is_websocket = args.rpc_url.startswith(('ws://', 'wss://'))
+        if is_websocket:
+            await w3.provider.disconnect()
         await health_runner.cleanup()
         logger.info("Shutdown complete")
 
