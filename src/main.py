@@ -184,37 +184,68 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
         AsyncWeb3 instance if successful, None otherwise
     """
     attempt = 0
+    last_error = None
+
     while attempt < max_attempts:
+        attempt += 1
+        is_final_attempt = attempt >= max_attempts
+
         try:
             if rpc_url.startswith(('ws://', 'wss://')):
                 w3 = AsyncWeb3[WebSocketProvider](WebSocketProvider(rpc_url))
             else:
                 w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
-            if await w3.is_connected():
-                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-                return w3
-            attempt += 1
-            wait_time = 2 ** attempt
-            logger.warning(
-                "Failed to connect to RPC node (attempt %s/%s), retrying in %s seconds",
-                attempt,
-                max_attempts,
-                wait_time
-            )
-            await asyncio.sleep(wait_time)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            attempt += 1
-            wait_time = 2 ** attempt
-            logger.error(
-                "Error connecting to RPC node: %s (attempt %s/%s), retrying in %s seconds",
-                e,
-                attempt,
-                max_attempts,
-                wait_time
-            )
-            await asyncio.sleep(wait_time)
 
-    logger.error("Unable to connect to RPC node after maximum retry attempts")
+            is_connected = await w3.is_connected()
+            if is_connected:
+                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+                logger.info("Successfully connected to RPC node at %s", rpc_url)
+                return w3
+
+            # If not connected, try to get diagnostic info on final attempt
+            if is_final_attempt:
+                try:
+                    await w3.eth.chain_id
+                except Exception as diagnostic_error:
+                    last_error = diagnostic_error
+                    logger.error(
+                        "Connection diagnostic on final attempt: %s",
+                        diagnostic_error
+                    )
+            else:
+                wait_time = 2 ** attempt
+                logger.warning(
+                    "Failed to connect to RPC node (attempt %s/%s), retrying in %s seconds",
+                    attempt,
+                    max_attempts,
+                    wait_time
+                )
+                await asyncio.sleep(wait_time)
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            last_error = e  # Always capture the error
+            if is_final_attempt:
+                logger.error(
+                    "Error connecting to RPC node on final attempt: %s",
+                    e
+                )
+            else:
+                wait_time = 2 ** attempt
+                logger.error(
+                    "Error connecting to RPC node: %s (attempt %s/%s), retrying in %s seconds",
+                    e,
+                    attempt,
+                    max_attempts,
+                    wait_time
+                )
+                await asyncio.sleep(wait_time)
+
+    logger.error(
+        "Unable to connect to RPC node at %s after %s retry attempts%s",
+        rpc_url,
+        max_attempts,
+        f": {last_error}" if last_error else ""
+    )
     return None
 
 async def liveness_handler(_request):
