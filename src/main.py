@@ -13,6 +13,8 @@ from web3.providers.persistent.websocket import WebSocketProvider
 from web3.providers.rpc.async_rpc import AsyncHTTPProvider
 from web3.providers.persistent.websocket import WebSocketProvider
 from web3.providers.rpc.async_rpc import AsyncHTTPProvider
+from web3.providers.persistent.websocket import WebSocketProvider
+from web3.providers.rpc.async_rpc import AsyncHTTPProvider
 
 from aiohttp import web
 from eth_utils.address import is_canonical_address
@@ -198,34 +200,44 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
         is_final_attempt = attempt >= max_attempts
 
         try:
-            # Create provider
             if is_websocket:
+                # https://web3py.readthedocs.io/en/stable/providers.html#web3.providers.persistent.WebSocketProvider
                 w3 = AsyncWeb3[WebSocketProvider](WebSocketProvider(rpc_url))
+                try:
+                    await w3.provider.connect()
+                    if not await w3.is_connected():
+                        raise ConnectionError("WebSocket connection not established")
+                except Exception as conn_error:
+                    last_error = conn_error
+                    if is_final_attempt:
+                        logger.error("WebSocket connection failed on final attempt: %s", conn_error)
+                        break
+                    else:
+                        wait_time = 2 ** attempt
+                        logger.warning(
+                            "Failed to connect (attempt %s/%s), retrying in %s seconds",
+                            attempt,
+                            max_attempts,
+                            wait_time
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
             else:
                 w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
-
-            # Check connection
-            try:
-                if is_websocket:
-                    await w3.eth.chain_id  # Trigger websocket connection
-                else:
-                    if not await w3.is_connected():
-                        raise ConnectionError("RPC node not connected")
-            except Exception as conn_error:
-                last_error = conn_error
-                if is_final_attempt:
-                    logger.error("Connection failed on final attempt: %s", conn_error)
-                    break
-                else:
-                    wait_time = 2 ** attempt
-                    logger.warning(
-                        "Failed to connect (attempt %s/%s), retrying in %s seconds",
-                        attempt,
-                        max_attempts,
-                        wait_time
-                    )
-                    await asyncio.sleep(wait_time)
-                    continue
+                if not await w3.is_connected():
+                    if is_final_attempt:
+                        logger.error("HTTP connection failed on final attempt")
+                        break
+                    else:
+                        wait_time = 2 ** attempt
+                        logger.warning(
+                            "Failed to connect (attempt %s/%s), retrying in %s seconds",
+                            attempt,
+                            max_attempts,
+                            wait_time
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
 
             # Successfully connected
             w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
@@ -491,8 +503,9 @@ For more information, see README.md
     finally:
         # Cleanup
         logger.info("Cleaning up")
-        if w3 and hasattr(w3.provider, 'close'):
-            await w3.provider.close()
+        is_websocket = args.rpc_url.startswith(('ws://', 'wss://'))
+        if is_websocket:
+            await w3.provider.disconnect()
         await health_runner.cleanup()
         logger.info("Shutdown complete")
 
