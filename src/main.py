@@ -13,6 +13,7 @@ from aiohttp import web
 from web3 import AsyncWeb3, Web3
 from web3.middleware import ExtraDataToPOAMiddleware, SignAndSendRawMiddlewareBuilder
 from web3.providers.rpc.async_rpc import AsyncHTTPProvider
+from web3.providers.persistent import WebSocketProvider
 
 # Shutdown flag for graceful termination (thread-safe for signal handlers)
 shutdown_event = threading.Event()
@@ -185,7 +186,10 @@ async def connect_with_retry(rpc_url: str, max_attempts: int = 3) -> Optional[As
     attempt = 0
     while attempt < max_attempts:
         try:
-            w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
+            if rpc_url.startswith(('ws://', 'wss://')):
+                w3 = AsyncWeb3[WebSocketProvider](WebSocketProvider(rpc_url))
+            else:
+                w3 = AsyncWeb3[AsyncHTTPProvider](AsyncHTTPProvider(rpc_url))
             if await w3.is_connected():
                 w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
                 return w3
@@ -446,6 +450,8 @@ For more information, see README.md
     finally:
         # Cleanup
         logger.info("Cleaning up")
+        if w3 and hasattr(w3.provider, 'close'):
+            await w3.provider.close()
         await health_runner.cleanup()
         logger.info("Shutdown complete")
 
